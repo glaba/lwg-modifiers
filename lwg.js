@@ -2414,24 +2414,6 @@ MapObject.prototype.checkUpgrades = function()
 	for(var i = 0; i < this.modifiers.length; i++)
 	{
 		var mod = this.modifiers[i].modifier;
-		var dataField = dataFields[field];
-		
-		if(mod.fields)
-			for(var k = 0; k < mod.fields.length; k++)
-				if(dataFields[mod.fields[k]])
-				{
-					var field = mod.fields[k];
-					var dataField = dataFields[field];
-					
-					if(dataField.type == "float" || dataField.type == "integer" || dataField.type == "bool")
-					{
-						if(mod.modificationsMultiplier && k in mod.modificationsMultiplier && (dataField.type == "float" || dataField.type == "integer"))
-							this.modifierMods[field] = this.modifierMods[field] ? (this.modifierMods[field] + (mod.modificationsMultiplier[k] - 1) * this.type[field]) : ((mod.modificationsMultiplier[k] - 1) * this.type[field]);
-						
-						if(mod.modifications && mod.modifications[k])
-							this.modifierMods[field] = this.modifierMods[field] ? (this.modifierMods[field] + mod.modifications[k]) : mod.modifications[k];
-					}
-				}
 		
 		if(mod.disabledCommands)
 			for(var k = 0; k < mod.disabledCommands.length; k++)
@@ -2445,17 +2427,6 @@ MapObject.prototype.checkUpgrades = function()
 		this.img = customImg;
 	else
 		this.refreshImg();
-	
-	var thisReference = this;
-	_.each(this.modifierMods, function(mod, field){
-		
-		var newVal = thisReference.getValue(field);
-		var checkVal = checkField(dataFields[field], newVal, true);
-		
-		if(checkVal != newVal)
-			thisReference.modifierMods[field] -= newVal - checkVal;
-		
-	});
 };
 
 // blocks / unblocks all the containing fields of this building / tile. Usually used before and after searching a path to (the center of) this building. For this, is has to not block the pathfinding.
@@ -15176,7 +15147,8 @@ var basicModifiers = [
 		duration: 60 * 20,
 		fields: ["isInvisible", "dmg"],
 		modifications: [1, 2],
-		modificationsMultiplier: [1, 1]
+		modificationsMultiplier: [1, 1],
+		modificationsRate: [0, 0]
 	},
 	
 	{
@@ -15187,7 +15159,8 @@ var basicModifiers = [
 		duration: 20 * 20,
 		fields: ["dmg"],
 		modifications: [5],
-		modificationsMultiplier: [1]
+		modificationsMultiplier: [1],
+		modificationsRate: [0]
 	},
 	
 	{
@@ -15198,7 +15171,8 @@ var basicModifiers = [
 		duration: 2 * 20,
 		fields: ["hpRegenerationRate"],
 		modifications: [4 / 20],
-		modificationsMultiplier: [1]
+		modificationsMultiplier: [1],
+		modificationsRate: [0]
 	},
 	
 	{
@@ -15209,7 +15183,8 @@ var basicModifiers = [
 		duration: 2 * 20,
 		fields: ["hpRegenerationRate"],
 		modifications: [-4 / 20],
-		modificationsMultiplier: [1]
+		modificationsMultiplier: [1],
+		modificationsRate: [0]
 	},
 	
 	{
@@ -15266,7 +15241,8 @@ var basicModifiers = [
 		duration: 1.1 * 20,
 		fields: ["movementSpeed"],
 		modifications: [0],
-		modificationsMultiplier: [0.5]
+		modificationsMultiplier: [0.5],
+		modificationsRate: [0]
 	}
 	
 ];
@@ -18519,6 +18495,21 @@ var modifiers_fields = [
 		logic: true,
 		group: "modification",
 		subName: "multiply",
+		groupDescription: "Here you can determinate which field will be affected by this modifier and how."
+	},
+
+	{
+		name: "modificationsRate",
+		type: "float",
+		isArray: true,
+		min_val: -99999999,
+		max_val: 99999999,
+		description: "The rate at which the value of the field will be modified per second.",
+		default_: 0.0,
+		default2_: [],
+		logic: true,
+		group: "modification",
+		subName: "rate",
 		groupDescription: "Here you can determinate which field will be affected by this modifier and how."
 	},
 	
@@ -33144,6 +33135,21 @@ worker.addEventListener('message', function(e) {
 			var u = game.getUnitById(msg[1]);
 			if(u)
 				u[msg[2]] = msg[2] == "forcedAnimation" ? msg[3] : parseFloat(msg[3]);
+		}
+
+		else if(msg[0] == "uUpdMod")
+		{
+			var u = game.getUnitById(msg[1]);
+			if(u)
+			{
+				var field = msg[2];
+				u.modifierMods[field] = parseFloat(msg[3]);
+				var newVal = u.getValue(field);
+				var checkVal = checkField(u.type.getDataFields()[field], newVal, true);
+
+				if(checkVal != newVal)
+					u.modifierMods[field] -= newVal - checkVal;
+			}
 		}
 		
 		else if(msg[0] == "update")

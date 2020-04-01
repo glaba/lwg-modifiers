@@ -1861,6 +1861,12 @@ MapObject.prototype.setArrayValAndSync = function(field, index, val)
 	message += "uUpdArr$" + this.id + "$" + field + "$" + index + "$" + val + "~";
 };
 
+MapObject.prototype.setModValAndSync = function(field, val)
+{
+	this.modifierMods[field] = val;
+	message += "uUpdMod$" + this.id + "$" + field + "$" + val + "~";
+}
+
 MapObject.prototype.setPosAndSync = function(field, pos)
 {
 	this[field] = pos;
@@ -2294,6 +2300,12 @@ MapObject.prototype.applyModifiers = function(modifiers, originUnit, duration)
 	for(var i = 0; i < modifiers.length; i++)
 	{
 		var mod = modifiers[i];
+
+		var hasRateModification = false;
+		if(mod.modificationsRate)
+			for(var j = 0; j < mod.modificationsRate.length; j++)
+				if(mod.modificationsRate[j] != 0)
+					hasRateModification = true;
 		
 		// check if already max stack reached
 		var stack = 0;
@@ -2328,7 +2340,9 @@ MapObject.prototype.applyModifiers = function(modifiers, originUnit, duration)
 			this.modifiers.push({
 				modifier: mod,
 				originUnit: originUnit,
-				removeAt: duration ? (ticksCounter + duration) : ((mod.duration && mod.duration > 0) ? (ticksCounter + mod.getValue("duration", this.owner)) : -1)
+				removeAt: duration ? (ticksCounter + duration) : ((mod.duration && mod.duration > 0) ? (ticksCounter + mod.getValue("duration", this.owner)) : -1),
+				startTime: ticksCounter,
+				hasRateModification: hasRateModification
 			});
 		}
 		
@@ -2375,11 +2389,18 @@ MapObject.prototype.checkUpgrades = function()
 					
 					if(dataField.type == "float" || dataField.type == "integer" || dataField.type == "bool")
 					{
+						var modValue = this.modifierMods[field] ? this.modifierMods[field] : 0;
+
 						if(mod.modificationsMultiplier && k in mod.modificationsMultiplier && (dataField.type == "float" || dataField.type == "integer"))
-							this.modifierMods[field] = this.modifierMods[field] ? (this.modifierMods[field] + (mod.modificationsMultiplier[k] - 1) * this.type[field]) : ((mod.modificationsMultiplier[k] - 1) * this.type[field]);
+							modValue += (mod.modificationsMultiplier[k] - 1) * this.type[field];
 						
 						if(mod.modifications && mod.modifications[k])
-							this.modifierMods[field] = this.modifierMods[field] ? (this.modifierMods[field] + mod.modifications[k]) : mod.modifications[k];
+							modValue += mod.modifications[k];
+
+						if(this.modifiers[i].hasRateModification)
+							modValue += mod.modificationsRate[k] * (ticksCounter - this.modifiers[i].startTime)
+
+						this.setModValAndSync(field, modValue);
 					}
 				}
 		
@@ -3181,12 +3202,39 @@ MapObject.prototype.canIssueOrder = function(command, target)
 
 MapObject.prototype.updateModifiers = function()
 {
+	var dataFields = this.type.getDataFields();
 	for(var i = 0; i < this.modifiers.length; i++)
+	{
 		if(this.modifiers[i].removeAt && this.modifiers[i].removeAt > 0 && this.modifiers[i].removeAt <= ticksCounter)
 		{
 			this.killModifier(i);
 			i--;
+			break;
 		}
+
+		// Update fields that have a non-zero modification rate
+		if(this.modifiers[i].hasRateModification)
+		{
+			var mod = this.modifiers[i].modifier;
+			for(var j = 0; j < mod.fields.length; j++)
+			{
+				var field = mod.fields[j];
+				var dataField = dataFields[field];
+				if(dataFields && (dataField.type == "float" || dataField.type == "integer") && j in mod.modificationsRate)
+				{
+					var modValue = this.modifierMods[field] ? this.modifierMods[field] : 0;
+					modValue += mod.modificationsRate[j];
+					this.setModValAndSync(field, modValue);
+				}
+			}
+
+			if(this.hp > this.getValue("hp"))
+				this.setValAndSync("hp", this.getValue("hp"));
+			
+			if(this.mana > this.getValue("mana"))
+				this.setValAndSync("mana", this.getValue("mana"));
+		}
+	}
 };
 
 MapObject.prototype.mapObjectUpdate = function()
@@ -12479,7 +12527,8 @@ var basicModifiers = [
 		duration: 60 * 20,
 		fields: ["isInvisible", "dmg"],
 		modifications: [1, 2],
-		modificationsMultiplier: [1, 1]
+		modificationsMultiplier: [1, 1],
+		modificationsRate: [0, 0]
 	},
 	
 	{
@@ -12490,7 +12539,8 @@ var basicModifiers = [
 		duration: 20 * 20,
 		fields: ["dmg"],
 		modifications: [5],
-		modificationsMultiplier: [1]
+		modificationsMultiplier: [1],
+		modificationsRate: [0]
 	},
 	
 	{
@@ -12501,7 +12551,8 @@ var basicModifiers = [
 		duration: 2 * 20,
 		fields: ["hpRegenerationRate"],
 		modifications: [4 / 20],
-		modificationsMultiplier: [1]
+		modificationsMultiplier: [1],
+		modificationsRate: [0]
 	},
 	
 	{
@@ -12512,7 +12563,8 @@ var basicModifiers = [
 		duration: 2 * 20,
 		fields: ["hpRegenerationRate"],
 		modifications: [-4 / 20],
-		modificationsMultiplier: [1]
+		modificationsMultiplier: [1],
+		modificationsRate: [0]
 	},
 	
 	{
@@ -12569,7 +12621,8 @@ var basicModifiers = [
 		duration: 1.1 * 20,
 		fields: ["movementSpeed"],
 		modifications: [0],
-		modificationsMultiplier: [0.5]
+		modificationsMultiplier: [0.5],
+		modificationsRate: [0]
 	}
 	
 ];
@@ -15822,6 +15875,21 @@ var modifiers_fields = [
 		logic: true,
 		group: "modification",
 		subName: "multiply",
+		groupDescription: "Here you can determinate which field will be affected by this modifier and how."
+	},
+
+	{
+		name: "modificationsRate",
+		type: "float",
+		isArray: true,
+		min_val: -99999999,
+		max_val: 99999999,
+		description: "The rate at which the value of the field will be modified per second.",
+		default_: 0.0,
+		default2_: [],
+		logic: true,
+		group: "modification",
+		subName: "rate",
 		groupDescription: "Here you can determinate which field will be affected by this modifier and how."
 	},
 	
