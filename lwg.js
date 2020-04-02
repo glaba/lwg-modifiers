@@ -7626,7 +7626,7 @@ Compiler.prototype.parse = function(str)
 			this.tokens.push({type: "identifier", raw: identifier, output: processed});
 		}
 
-		// Sparate token due to ambiguity between subtraction and negative sign
+		// Separate token due to ambiguity between subtraction and negative sign
 		else if(len = match(str, i, /\-/))
 			this.tokens.push({type: "minus", raw: "-", output: "-"});
 
@@ -7696,7 +7696,7 @@ Compiler.prototype.parse = function(str)
 	//  P -> )
 	//  V -> v
 	// which is the (decidedly not pretty) Greibach normal form of the much more straightforward (and equivalent) grammar:
-	//  E -> A E A | (E) | E l E
+	//  E -> A c A | (E) | E l E
 	//  A -> A a A | A - A | (A) | v | -v
 	// where E represents a valid logical expression for checking conditions, and A represents any arithmetic expression
 
