@@ -7636,10 +7636,10 @@ Compiler.prototype.parse = function(str)
 			this.tokens.push({type: "number", raw: number, output: number});
 		}
 
-		else if(len = match(str, i, /[+*/%]/))
+		else if(len = match(str, i, /(\+|\*|\/|\%|\^)/))
 		{
 			var operator = str.substr(i, len);
-			this.tokens.push({type: "arithmetic", raw: operator, output: operator});
+			this.tokens.push({type: "arithmetic", raw: operator, output: (operator = "^") ? "**" : operator});
 		}
 
 		else if(len = match(str, i, /(>=|<=|>|<|==|=|!=)/))
