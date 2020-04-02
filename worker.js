@@ -2392,7 +2392,7 @@ MapObject.prototype.checkUpgrades = function()
 						var modValue = this.modifierMods[field] ? this.modifierMods[field] : 0;
 
 						if(mod.modificationsMultiplier && k in mod.modificationsMultiplier && (dataField.type == "float" || dataField.type == "integer"))
-							modValue += (mod.modificationsMultiplier[k] - 1) * this.type[field];
+							modValue += (mod.modificationsMultiplier[k] - 1) * (this.type[field] ? this.type[field] : 0);
 
 						if(mod.modifications && mod.modifications[k])
 							modValue += mod.modifications[k];
