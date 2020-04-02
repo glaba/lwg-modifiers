@@ -1865,7 +1865,13 @@ MapObject.prototype.setModValAndSync = function(field, val)
 {
 	this.modifierMods[field] = val;
 	message += "uUpdMod$" + this.id + "$" + field + "$" + val + "~";
-}
+};
+
+MapObject.prototype.setModActivationAndSync = function(index, active)
+{
+	this.modifiers[index].active = active;
+	message += "actvMod$" + this.id + "$" + index + "$" + (active ? "t" : "f") + "~";
+};
 
 MapObject.prototype.setPosAndSync = function(field, pos)
 {
@@ -2342,7 +2348,9 @@ MapObject.prototype.applyModifiers = function(modifiers, originUnit, duration)
 				originUnit: originUnit,
 				removeAt: duration ? (ticksCounter + duration) : ((mod.duration && mod.duration > 0) ? (ticksCounter + mod.getValue("duration", this.owner)) : -1),
 				startTime: ticksCounter,
-				hasRateModification: hasRateModification
+				hasRateModification: hasRateModification,
+				active: mod.hasActivationCondition ? false : true,
+				timeInactive: 0
 			});
 		}
 		
@@ -2358,6 +2366,7 @@ MapObject.prototype.applyModifiers = function(modifiers, originUnit, duration)
 	
 	message += "aplMods$" + this.id + "$" + originUnit.id + modIdArray + "~";
 	
+	this.updateModifiers();
 	this.checkUpgrades();
 };
 
@@ -2370,13 +2379,17 @@ MapObject.prototype.checkUpgrades = function()
 {
 	this.modifierMods = {};
 	this.disabledCommands = {};
-	
+
 	var dataFields = this.type.getDataFields();
-	
+
 	var customAttackEffect = null;
-	
+
 	for(var i = 0; i < this.modifiers.length; i++)
 	{
+		if(!this.modifiers[i].active) {
+			continue;
+		}
+
 		var mod = this.modifiers[i].modifier;
 		var dataField = dataFields[field];
 		
@@ -2398,7 +2411,7 @@ MapObject.prototype.checkUpgrades = function()
 							modValue += mod.modifications[k];
 
 						if(this.modifiers[i].hasRateModification && k in mod.modificationsRate)
-							modValue += mod.modificationsRate[k] * (ticksCounter - this.modifiers[i].startTime)
+							modValue += mod.modificationsRate[k] * (ticksCounter - this.modifiers[i].startTime - this.modifiers[i].timeInactive);
 
 						this.setModValAndSync(field, modValue);
 					}
@@ -3202,6 +3215,7 @@ MapObject.prototype.canIssueOrder = function(command, target)
 
 MapObject.prototype.updateModifiers = function()
 {
+	var checkUpgrades = false;
 	var dataFields = this.type.getDataFields();
 	for(var i = 0; i < this.modifiers.length; i++)
 	{
@@ -3212,8 +3226,20 @@ MapObject.prototype.updateModifiers = function()
 			break;
 		}
 
+		if(this.modifiers[i].modifier.hasActivationCondition)
+		{
+			var shouldActivate = (this.modifiers[i].modifier.activationCondition && this.modifiers[i].modifier.activationCondition(this.type, this));
+			if (!shouldActivate)
+				this.modifiers[i].timeInactive += 1;
+			if (shouldActivate != this.modifiers[i].active)
+			{
+				this.setModActivationAndSync(i, shouldActivate);
+				checkUpgrades = true;
+			}
+		}
+
 		// Update fields that have a non-zero modification rate
-		if(this.modifiers[i].hasRateModification)
+		if(this.modifiers[i].active && this.modifiers[i].hasRateModification)
 		{
 			var mod = this.modifiers[i].modifier;
 			for(var j = 0; j < mod.fields.length; j++)
@@ -3235,6 +3261,9 @@ MapObject.prototype.updateModifiers = function()
 				this.setValAndSync("mana", this.getValue("mana"));
 		}
 	}
+
+	if(checkUpgrades)
+		this.checkUpgrades();
 };
 
 MapObject.prototype.mapObjectUpdate = function()
@@ -5194,7 +5223,7 @@ function calculateTypesTickValues()
 	}
 	
 	for(var i = 0; i < game.commands.length; i++)
-		game.commands[i].compileCondition0();
+		game.commands[i].compileCondition();
 };
 
 function getLenOfPath(initField, path)
@@ -15444,8 +15473,9 @@ var ability_fields = [
 	{
 		name: "autocastConditions",
 		realTimeCompile: true,
+		compilerType: "Command",
 		type: "string",
-		max_len: 100,
+		max_len: 1000,
 		min_len: 0,
 		description: "If this ability has autocast, you can use this to tell the AI what targets to use for autocasting. Write something like hp > 10 and units that have hp bigger than 10 will be targetted. use && to combine multiple conditions with a logical AND, use || to combine multiple conditions with a logical OR. Use type.fieldname to refer to the units basic types fields. If you use hp, its the current units hp, if you use type.hp, its its basic hp. So if you use hp < type.hp for example, you get units that currently have hp less then their full hp. Use this to refer to the casting unit. For example this.owner = owner will only hit units that have the same owner as the casting unit.",
 		default_: "",
@@ -15890,7 +15920,8 @@ var modifiers_fields = [
 		logic: true,
 		group: "modification",
 		subName: "rate",
-		groupDescription: "Here you can determinate which field will be affected by this modifier and how."
+		groupDescription: "Here you can determinate which field will be affected by this modifier and how.",
+		displayScale: 20
 	},
 	
 	{
@@ -15994,6 +16025,31 @@ var modifiers_fields = [
 		description: "Abilities / commands that get disabled for the target unit while being under the influence of this modifier.",
 		default_: lists.commands.flamestrike,
 		default2_: [],
+		logic: true
+	},
+
+	{
+		name: "hasActivationCondition",
+		type: "bool",
+		description: "Determines if this modifier only applies under certain conditions.",
+		default_: false
+	},
+
+	{
+		name: "activationConditions",
+		realTimeCompile: true,
+		compilerType: "Modifier",
+		type: "string",
+		max_len: 1000,
+		min_len: 0,
+		description: "If this ability has activation conditions, this modifier will only apply if those conditions are satisfied. \
+			These conditions are based on the state of the current unit, constructed from statements similar to this.hp > 100. \
+			Any arithmetic expressions involving the operators +, -, *, /, and % are allowed, along with parentheses. \
+			Conditions can be combined using && for a logical AND, and || for a logical OR, and parentheses can be used in combining conditions as well. \
+			To get the default values for the unit, rather than the current values, use type.fieldname instead of just this.fieldname. \
+			As an example, here is a condition for a modifier that will apply when a unit is between 30% and 70% HP: \
+			this.hp > type.hp * 0.3 && this.hp < type.hp * 0.7",
+		default_: "",
 		logic: true
 	},
 	
@@ -19447,11 +19503,12 @@ Upgrade.prototype.getBasicType = function()
 	return false;
 };
 
-// identifierValidator processes each identifier found in the expression
-// and returns a (potentially) modified version if it is valid, or a falsey value if not
-function Compiler(identifierProcessor)
+function Compiler(compilerType)
 {
-	this.identifierProcessor = identifierProcessor;
+	switch(compilerType) {
+		case "Command": this.processIdentifier = Command.prototype.compilerProcessIdentifier; break;
+		case "Modifier": this.processIdentifier = Modifier.prototype.compilerProcessIdentifier; break;
+	}
 }
 
 // Returns an array of 2 elements, where the 1st item is false on error and true on no error,
@@ -19481,7 +19538,7 @@ Compiler.prototype.parse = function(str)
 		else if(len = match(str, i, /[a-zA-Z_]+(\.[a-zA-Z_]+)*/))
 		{
 			var identifier = str.substr(i, len);
-			var processed = this.identifierProcessor(identifier);
+			var processed = this.processIdentifier(identifier);
 			if (!processed)
 			{
 				delete this.tokens;
@@ -19749,18 +19806,17 @@ function Command(data)
 		if(this.requiredLevels && this.requiredLevels.length > 0)
 			interface_.buttons.push(new Button(this, true));
 	}
-
-	this.compiler = new Compiler(this.compilerProcessIdentifier);
 };
 
-Command.prototype.compileCondition0 = function()
+Command.prototype.compileCondition = function()
 {
 	if(this.autocastConditions && this.autocastConditions.length > 0)
 	{
-		var parseResults = this.compiler.parse(this.autocastConditions);
+		var compiler = new Compiler("Command");
+		var parseResults = compiler.parse(this.autocastConditions);
 
 		if(parseResults[0]) {
-			this.autocastCondition = this.compiler.compile(["u", "uthis"]);
+			this.autocastCondition = compiler.compile(["u", "uthis"]);
 		}
 	}
 };
@@ -19920,12 +19976,41 @@ function Modifier(data)
 	this.auraHitsSelf = true;
 	
 	_.extend(this, data);
+
+	// Compile activation conditions if applicable
+	this.compileCondition();
 	
 	// copy arrays (so they dont get only referenced)
 	var thisRef = this;
 	_.each(data, function(val, key){
 		thisRef[key] = Object.prototype.toString.call(thisRef[key]) === "[object Array]" ? thisRef[key].slice() : thisRef[key];
 	});
+};
+
+Modifier.prototype.compilerProcessIdentifier = function(id)
+{
+	var pieces = id.split(".");
+
+	if(pieces.length <= 1)
+		return false;
+
+	if(pieces[0] != "type" && pieces[0] != "this")
+		return false;
+
+	return "u" + id;
+};
+
+Modifier.prototype.compileCondition = function()
+{
+	if(this.hasActivationCondition && this.activationConditions && this.activationConditions.length > 0)
+	{
+		var compiler = new Compiler("Modifier");
+		var parseResults = compiler.parse(this.activationConditions);
+
+		if(parseResults[0]) {
+			this.activationCondition = compiler.compile(["utype", "uthis"]);
+		}
+	}
 };
 
 Modifier.prototype.getDataFields = function()
