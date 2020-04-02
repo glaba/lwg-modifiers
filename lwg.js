@@ -6625,9 +6625,9 @@ function getDefaultPlayerSettings(countPlayers)
 function realTimeCompile(htmlEl)
 {
 	var jqueryEL = $("#" + htmlEl.parentNode.id).parent().parent();
-	var compile = Command.prototype.compileCondition($(htmlEl).val());
+	var parseResult = new Compiler(Command.prototype.compilerProcessIdentifier).parse($(htmlEl).val());
 	
-	jqueryEL.prop("title", compile[0] ? "condition is ok" : compile[1]);
+	jqueryEL.prop("title", parseResult[0] ? "condition is ok" : parseResult[1]);
 	jqueryEL.tooltip({content: jqueryEL.prop("title")});
 	jqueryEL.tooltip("open");
 }
@@ -7578,10 +7578,264 @@ Upgrade.prototype.getBasicType = function()
 	return false;
 };
 
+// identifierValidator processes each identifier found in the expression
+// and returns a (potentially) modified version if it is valid, or a falsey value if not
+function Compiler(identifierProcessor)
+{
+	this.identifierProcessor = identifierProcessor;
+}
 
+// Returns an array of 2 elements, where the 1st item is false on error and true on no error,
+// and the 2nd element is an error message if applicable
+Compiler.prototype.parse = function(str)
+{
+	if(!str || str.length == 0)
+		return [0, "no content"];
 
+	this.tokens = [];
 
+	// First, convert the input string into a stream of tokens
+	
+	// The following function checks for a match of the regex in the string starting at index i
+	// Returns null for no match, or an int indicating the length of the match if there is one
+	var match = (str, i, regex) =>
+	{
+		var match = str.substr(i, str.length).match(regex);
+		return (match && match.index == 0) ? match[0].length : null;
+	}
 
+	var len;
+	for(var i = 0; i < str.length;)
+	{
+		if(len = match(str, i, /\s+/)) {} // Consume any whitespace
+
+		else if(len = match(str, i, /[a-zA-Z_]+(\.[a-zA-Z_]+)*/))
+		{
+			var identifier = str.substr(i, len);
+			var processed = this.identifierProcessor(identifier);
+			if (!processed)
+			{
+				delete this.tokens;
+				return [false, "Invalid identifier: " + identifier];
+			}
+			this.tokens.push({type: "identifier", raw: identifier, output: processed});
+		}
+
+		// Sparate token due to ambiguity between subtraction and negative sign
+		else if(len = match(str, i, /\-/))
+			this.tokens.push({type: "minus", raw: "-", output: "-"});
+
+		else if(len = match(str, i, /[0-9]+(\.[0-9]+|)/))
+		{
+			var number = str.substr(i, len);
+			this.tokens.push({type: "number", raw: number, output: number});
+		}
+
+		else if(len = match(str, i, /[+*/%]/))
+		{
+			var operator = str.substr(i, len);
+			this.tokens.push({type: "arithmetic", raw: operator, output: operator});
+		}
+
+		else if(len = match(str, i, /(>=|<=|>|<|==|=|!=)/))
+		{
+			var operator = str.substr(i, len);
+			this.tokens.push({type: "comparison", raw: operator, output: (operator == "=") ? "==" : operator});
+		}
+
+		else if(len = match(str, i, /(&&|\|\|)/))
+		{
+			var operator = str.substr(i, len);
+			this.tokens.push({type: "logical", raw: operator, output: operator});
+		}
+
+		else if(len = match(str, i, /\(/))
+			this.tokens.push({type: "open_paren", raw: "(", output: "("});
+
+		else if(len = match(str, i, /\)/))
+			this.tokens.push({type: "close_paren", raw: ")", output: ")"});
+
+		else {
+			delete this.tokens;
+			return [false, "Invalid character: " + str[i]];
+		}
+
+		i += len;
+	}
+
+	if(this.tokens.length == 0)
+	{
+		delete this.tokens;
+		return [false, "Empty expression provided"];
+	}
+
+	// Verify that the provided expression is valid using a non-deterministic pushdown automaton
+	//  with terminals v, c, a, l, (, ), with mappings to tokens as in the following maps
+	var token_map = {
+		"identifier": "v", "minus": "-", "number": "v", "comparison": "c", "arithmetic": "a",
+		"logical": "l", "open_paren": "(", "close_paren": ")", "": ""
+	};
+
+	var reverse_token_map_readable = {
+		"v": "identifier or number", "-": "minus sign", "c": "comparison operator", "a": "arithmetic operator",
+		"l": "logical operator", "(": "(", ")": ")", "": ""
+	};
+
+	// The pushdown automaton is generated from the following grammar:
+	//  E -> vTCAM | -VTCAM | vUCAM | -VUCAM | (APTCAM | (APUCAM | (EPM
+	//  M -> lEM | epsilon
+	//  A -> vT | -VT | vU | -VU | (APT | (APU
+	//  T -> aAT | epsilon
+	//  U -> -AU | epsilon
+	//  C -> c
+	//  P -> )
+	//  V -> v
+	// which is the (decidedly not pretty) Greibach normal form of the much more straightforward (and equivalent) grammar:
+	//  E -> A E A | (E) | E l E
+	//  A -> A a A | A - A | (A) | v | -v
+	// where E represents a valid logical expression for checking conditions, and A represents any arithmetic expression
+
+	// Transition function, where the first character of the key is the token, and the second is the symbol on the top of the stack
+	// The corresponding array is the set of possible transitions,
+	//  where each string represents what the current top of the stack can be replaced with
+	// There is an exact correspondence between the Greibach normal form of the grammar and the transition function
+	var transition_fn = {
+		"vE": ["MACT", "MACU"],
+		"-E": ["MACTV", "MACUV"],
+		"(E": ["MACTPA", "MACUPA", "MPE"],
+		"lM": ["ME"],
+		"M": [""],
+		"vA": ["T", "U"],
+		"-A": ["TV", "UV"],
+		"(A": ["TPA", "UPA"],
+		"aT": ["TA"],
+		"T": [""],
+		"-U": ["UA"],
+		"U": [""],
+		"cC": [""],
+		")P": [""],
+		"vV": [""]
+	};
+
+	// Set of stacks, where each stack in the set represents a possible parse of the remaining part of the input string
+	// Starts as E, because any string must necessarily be parsed as an expression (E)
+	var stacks = new Set(["E"]);
+
+	// Takes a stack and a token as input, and appends the set of reachable stack states from that stack to newStacks
+	var transition = (stack, token, newStacks) => {
+		var top = stack[stack.length - 1];
+		var pair = token_map[token] + top;
+		if(pair in transition_fn)
+		{
+			transition_fn[pair].forEach((substitution) => {
+				newStacks.add(stack.substr(0, stack.length - 1) + substitution);
+			});
+		}
+	};
+
+	// Performs as many epsilon transitions as possible,
+	// adding new stacks until no more epsilon transitions are available
+	var performEpsilonTransitions = () => {
+		while(true)
+		{
+			var newStacks = new Set(stacks);
+
+			stacks.forEach((stack) => {
+				transition(stack, "", newStacks);
+			});
+
+			if(newStacks.size == stacks.size)
+				break;
+
+			stacks = newStacks;
+		}
+	};
+
+	// Consumes a token, advancing the PDA by one step
+	var consumeToken = (token) => {
+		var newStacks = new Set();
+
+		stacks.forEach((stack) => {
+			transition(stack, token, newStacks);
+		});
+		stacks = newStacks;
+
+		performEpsilonTransitions();
+	};
+
+	// Iterate through all the tokens to parse the entire expression
+	for(var i = 0; i < this.tokens.length; i++)
+	{
+		consumeToken(this.tokens[i].type);
+
+		// If there are no more stacks left, there was a syntax error
+		// No stacks left means there is no remaining viable way to parse the expression
+		if(stacks.size == 0)
+		{
+			var humanName;
+			var printRaw = false;
+			// Return a readable error message
+			switch(this.tokens[i].type)
+			{
+				case "identifier":
+				case "number":
+				case "logical":
+					humanName = this.tokens[i].type;
+					printRaw = true;
+					break;
+				case "comparison":
+				case "arithmetic":
+					humanName = this.tokens[i].type + " operator";
+					printRaw = true;
+					break;
+				case "open_paren":
+					humanName = "opening parenthesis";
+					break;
+				case "close_paren":
+					humanName = "closing parenthesis";
+					break;
+				case "minus":
+					humanName = "minus sign";
+					break;
+			}
+			var errMsg = "Unexpected " + humanName + " " + (printRaw ? this.tokens[i].raw : "");
+			delete this.tokens;
+			return [false, errMsg];
+		}
+	}
+
+	if(!stacks.has(""))
+	{
+		// Produce an error message indicating what characters we expected at the end of the string
+
+		// Create a map from symbol at the top of the stack to tokens that it could start with
+		var expectedTokens = {};
+		Object.keys(transition_fn).filter((key) => key.length == 2).forEach((key) => {
+			if (!expectedTokens[key[1]])
+				expectedTokens[key[1]] = [];
+			expectedTokens[key[1]].push(key[0]);
+		})
+
+		// Filter the previous map by the stack symbols that were at the top of the remaining stacks
+		var options = new Set();
+		stacks.forEach((stack) => {
+			var top = stack[stack.length - 1];
+			expectedTokens[top].forEach((token) => options.add(reverse_token_map_readable[token]));
+		});
+		delete this.tokens;
+		return [false, "Incomplete expression, expected one of: " + Array.from(options).join(", ")]
+	} 
+	else
+		return [true, ""];
+}
+
+// Takes the list of parameters of the function to be generated and returns the compiled function
+Compiler.prototype.compile = function(signature)
+{
+	var fn;
+	eval("fn = function(" + signature.join(",") + "){return " + this.tokens.map((token) => token.output).join("") + ";};");
+	return fn;
+};
 
 function Command(data)
 {
@@ -7626,175 +7880,38 @@ function Command(data)
 		if(this.requiredLevels && this.requiredLevels.length > 0)
 			interface_.buttons.push(new Button(this, true));
 	}
+
+	this.compiler = new Compiler(this.compilerProcessIdentifier);
 };
 
 Command.prototype.compileCondition0 = function()
 {
 	if(this.autocastConditions && this.autocastConditions.length > 0)
 	{
-		var comp = this.compileCondition(this.autocastConditions);
-		
-		if(comp && comp[0])
-			eval("this.autocastCondition = function(u, uthis){return " + comp[1] + ";};");
+		var parseResults = this.compiler.parse(this.autocastConditions);
+
+		if(parseResults[0])
+			this.autocastCondition = this.compiler.compile(["u", "uthis"]);
 	}
+};
+
+Command.prototype.compilerProcessIdentifier = function(id)
+{
+	var pieces = id.split(".");
+
+	if(pieces.length >= 1)
+		if(pieces[0].substr(0, 4) != "type" && pieces[0].substr(0, 4) != "this" && pieces[0].substr(0, 5) != "owner")
+			return false;
+
+	if(id != "true" && id != "false")
+		id = id.substr(0, 5) != "this." ? ("u." + id) : ("u" + id);
+
+	return id;
 };
 
 Command.prototype.getTitleImage = function(nr)
 {
 	return this.image.getTitleImage(nr);
-};
-
-// returns an 2 len array; 1st element: false on error, true on no error; 2nd element: error msg on error, finished language on no error
-Command.prototype.compileCondition = function(str)
-{
-	if(!str || str.length == 0)
-		return [0, "no content"];
-	
-	var lastType = "";
-	var word = "";
-	var words = [];
-	
-	str += " ";
-	
-	for(var i = 0; i < str.length; i++)
-	{
-		var char_ = str.substr(i, 1);
-		
-		var type_ = "";
-		
-		if(char_.match(/[a-zA-Z_]/) == char_)
-			type_ = "char";
-		
-		else if(char_.match(/[0-9]/) == char_)
-			type_ = "numerical";
-		
-		else if(char_.match(/[<>!=]/) == char_)
-			type_ = "compare";
-		
-		else if(char_.match(/[\-+*/]/) == char_)
-			type_ = "arithmetic";
-		
-		else if(char_.match(/[\.]/) == char_)
-			type_ = lastType == "char" ? "char" : "numerical";
-		
-		else if(char_.match(/[&|]/) == char_)
-			type_ = "conjunction";
-		
-		else if(char_ == " ")
-			type_ = "undefined";
-		
-		else
-			return [false, "invalid character: " + char_];
-		
-		if(type_ == lastType || lastType == "")
-			word += char_;
-		
-		else
-		{
-			if(lastType != "undefined")
-			{
-				if(lastType == "numerical")
-				{
-					var word2 = parseFloat(word);
-					
-					if(word2.isNaN)
-						return [false, word2 + " is not a number"];
-					
-					else
-						word = word2;
-				}
-				
-				else if(lastType == "compare")
-				{
-					if(word != "<" && word != ">" && word != "<=" && word != ">=" && word != "=" && word != "==" && word != "!=")
-						return [false, word + " is not a valid comparison expression (allowed are: < > <= >= == !=)"];
-					
-					if(word == "=")
-						word = "==";
-				}
-				
-				else if(lastType == "arithmetic")
-				{
-					if(word.length != 1)
-						return [false, word + " is not a valid arithmetic expression (allowed are: + - / *)"];
-				}
-				
-				else if(lastType == "conjunction")
-				{
-					if(word != "&&" && word != "||")
-						return [false, word + " is not a valid conjunction (allowed are: && ||)"];
-				}
-				
-				else if(lastType == "char")
-				{
-					var countDots = (word.match(/\./g) || []).length > 0;
-					
-					if(countDots == 1)
-					{
-						if(word.substr(0, 5) != "type." && word.substr(0, 5) != "this." && word.substr(0, 6) != "owner.")
-							return [false, word + " is not a valid field name"];
-					}
-					
-					else if(countDots > 2)
-						return [false, word + " is not a valid field name"];
-					
-					if(word != "true" && word != "false")
-						word = word.substr(0, 5) != "this." ? ("u." + word) : ("u" + word);
-				}
-				
-				words.push({
-					word: word,
-					type: (lastType == "char" || lastType == "numerical") ? "expression" : lastType
-				});
-			}
-			
-			word = char_;
-		}
-		
-		lastType = type_;
-	}
-	
-	var stateMachine = {
-		
-		start: {
-			expression: "exp1"
-		},
-		
-		exp1: {
-			arithmetic: "start",
-			compare: "c"
-		},
-		
-		c: {
-			expression: "exp2"
-		},
-		
-		exp2: {
-			isFinish: true,
-			arithmetic: "c",
-			conjunction: "start"
-		}
-		
-	}
-	
-	var state = stateMachine.start;
-	var language = "";
-	
-	for(var i = 0; i < words.length; i++)
-	{
-		language += words[i].word + " ";
-		
-		if(state[words[i].type])
-			state = stateMachine[state[words[i].type]];
-		
-		else
-			return [false, "syntax error; unexpected word: " + words[i].word];
-	}
-	
-	if(!state.isFinish)
-		return [false, "syntax error; expecting at least one more word"];
-	
-	return [true, language];
 };
 
 Command.prototype.canTargetUnit = function(u)
@@ -31195,8 +31312,8 @@ MapEditorData.prototype.getFieldHTMLCode = function(field, value, index, type)
 		var realTimeCompileTitle = "";
 		if(field.realTimeCompile)
 		{
-			var compile = Command.prototype.compileCondition(val);
-			realTimeCompileTitle = " title='" + (compile[0] ? "condition is ok" : compile[1]) + "' ";
+			var parseResult = new Compiler(Command.prototype.compilerProcessIdentifier).parse(val);
+			realTimeCompileTitle = " title='" + (parseResult[0] ? "condition is ok" : parseResult[1]) + "' ";
 		}
 		
 		str += "<input onchange='mapEditorData.saveUnit(); " + realTimeCompile + "' onkeypress='" + realTimeCompile + "' onkeyup='" + realTimeCompile + "' onload='" + realTimeCompile + "' " + realTimeCompileTitle;
