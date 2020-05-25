@@ -7639,7 +7639,7 @@ Compiler.prototype.parse = function(str)
 		else if(len = match(str, i, /(\+|\*|\/|\%|\^)/))
 		{
 			var operator = str.substr(i, len);
-			this.tokens.push({type: "arithmetic", raw: operator, output: (operator = "^") ? "**" : operator});
+			this.tokens.push({type: "arithmetic", raw: operator, output: (operator == "^") ? "**" : operator});
 		}
 
 		else if(len = match(str, i, /(>=|<=|>|<|==|=|!=)/))
@@ -18745,7 +18745,8 @@ var modifiers_fields = [
 		name: "hasActivationCondition",
 		type: "bool",
 		description: "Determines if this modifier only applies under certain conditions.",
-		default_: false
+		default_: false,
+		logic: true
 	},
 
 	{

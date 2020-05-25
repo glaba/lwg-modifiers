@@ -5224,6 +5224,9 @@ function calculateTypesTickValues()
 	
 	for(var i = 0; i < game.commands.length; i++)
 		game.commands[i].compileCondition();
+
+	for(var i = 0; i < game.modifiers.length; i++)
+		game.modifiers[i].compileCondition();
 };
 
 function getLenOfPath(initField, path)
@@ -16032,7 +16035,8 @@ var modifiers_fields = [
 		name: "hasActivationCondition",
 		type: "bool",
 		description: "Determines if this modifier only applies under certain conditions.",
-		default_: false
+		default_: false,
+		logic: true
 	},
 
 	{
@@ -19547,7 +19551,7 @@ Compiler.prototype.parse = function(str)
 			this.tokens.push({type: "identifier", raw: identifier, output: processed});
 		}
 
-		// Sparate token due to ambiguity between subtraction and negative sign
+		// Separate token due to ambiguity between subtraction and negative sign
 		else if(len = match(str, i, /\-/))
 			this.tokens.push({type: "minus", raw: "-", output: "-"});
 
@@ -19560,10 +19564,10 @@ Compiler.prototype.parse = function(str)
 		else if(len = match(str, i, /(\+|\*|\/|\%|\^)/))
 		{
 			var operator = str.substr(i, len);
-			this.tokens.push({type: "arithmetic", raw: operator, output: (operator = "^") ? "**" : operator});
+			this.tokens.push({type: "arithmetic", raw: operator, output: (operator == "^") ? "**" : operator});
 		}
 
-		else if(len = match(str, i, /(>=|<=|>|<|=|!=)/))
+		else if(len = match(str, i, /(>=|<=|>|<|==|=|!=)/))
 		{
 			var operator = str.substr(i, len);
 			this.tokens.push({type: "comparison", raw: operator, output: (operator == "=") ? "==" : operator});
@@ -19617,7 +19621,7 @@ Compiler.prototype.parse = function(str)
 	//  P -> )
 	//  V -> v
 	// which is the (decidedly not pretty) Greibach normal form of the much more straightforward (and equivalent) grammar:
-	//  E -> A E A | (E) | E l E
+	//  E -> A c A | (E) | E l E
 	//  A -> A a A | A - A | (A) | v | -v
 	// where E represents a valid logical expression for checking conditions, and A represents any arithmetic expression
 
@@ -19825,8 +19829,8 @@ Command.prototype.compilerProcessIdentifier = function(id)
 {
 	var pieces = id.split(".");
 
-	if(pieces.length >= 1)
-		if(pieces[0].substr(0, 4) != "type" && pieces[0].substr(0, 4) != "this" && pieces[0].substr(0, 5) != "owner")
+	if(pieces.length > 1)
+		if(pieces[0] != "type" && pieces[0] != "this" && pieces[0] != "owner")
 			return false;
 
 	if(id != "true" && id != "false")
@@ -19977,9 +19981,6 @@ function Modifier(data)
 	
 	_.extend(this, data);
 
-	// Compile activation conditions if applicable
-	this.compileCondition();
-	
 	// copy arrays (so they dont get only referenced)
 	var thisRef = this;
 	_.each(data, function(val, key){
